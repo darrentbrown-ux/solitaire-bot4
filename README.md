@@ -82,6 +82,7 @@ Press **Escape** at any time to stop (works globally).
 | `--max-attempts N` | Max games to attempt (0 = unlimited) | `0` |
 | `--verbose` / `-v` | Show detailed output (hidden cards, move log) | Off |
 | `--no-launch` | Don't auto-launch sol.exe | Off |
+| `--exit-on-error` | Exit immediately on move failure, logging what was attempted | Off |
 | `--exe PATH` | Custom path to sol.exe | `C:\Games\SOL_ENGLISH\sol.exe` |
 
 ### Examples
