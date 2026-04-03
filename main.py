@@ -287,6 +287,13 @@ class SolitaireBot:
             old_hash = self._hash_state(state)
             success = False
 
+            # First, flip any exposed face-down cards BEFORE executing the move.
+            # This prevents a card flip from being mistaken for a successful move.
+            self._flip_exposed_cards(state)
+            time.sleep(0.05)
+            state = self._read_state()
+            old_hash = self._hash_state(state)
+
             for attempt in range(max_retries):
                 self.controller.execute_move(move, state)
                 time.sleep(self.post_move_delay)
@@ -320,9 +327,9 @@ class SolitaireBot:
             move_count += 1
             self.total_moves += 1
 
-            # Flip any exposed face-down cards
+            # Flip any remaining exposed face-down cards (post-move cleanup)
             self._flip_exposed_cards(state)
-            time.sleep(0.03 if self._fast else 0.15)
+            time.sleep(0.03 if self._fast else 0.10)
 
         return "failed"
 
