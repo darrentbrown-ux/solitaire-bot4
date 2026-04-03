@@ -284,9 +284,12 @@ class GameState:
 
         if mt == MoveType.DRAW_STOCK:
             if new_state.stock.cards:
-                card = new_state.stock.cards.pop()
-                card.face_down = False
-                new_state.waste.cards.append(card)
+                # Draw draw_count cards (or fewer if stock is smaller)
+                num_to_draw = min(new_state.draw_count, len(new_state.stock.cards))
+                for _ in range(num_to_draw):
+                    card = new_state.stock.cards.pop()
+                    card.face_down = False
+                    new_state.waste.cards.append(card)
 
         elif mt == MoveType.RECYCLE_WASTE:
             # Flip waste back to stock in reverse order (face-down)
