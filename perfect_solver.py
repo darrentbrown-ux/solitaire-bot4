@@ -86,7 +86,7 @@ class PerfectSolver:
             return SolveResult(True, pre_moves, self.nodes_explored, elapsed)
 
         # Run DFS
-        result = self._dfs(state, 0, 0)
+        result = self._dfs(state, 0, 0, None)
 
         elapsed = time.time() - self.start_time
 
@@ -105,7 +105,8 @@ class PerfectSolver:
         return sum(len(f.cards) for f in state.foundations)
 
     def _dfs(self, state: GameState, depth: int,
-             stock_passes: int) -> Optional[List[Move]]:
+             stock_passes: int, last_move: Optional[Move],
+             last_tab_move: Optional[Move] = None) -> Optional[List[Move]]:
         """
         Depth-first search with pruning.
         Returns the move sequence from this point to victory, or None.
@@ -134,8 +135,12 @@ class PerfectSolver:
             return None
         self.visited[h] = fc
 
-        # Generate and order moves
+        # Generate and order moves, filtering reversals
         moves = self._generate_ordered_moves(state, stock_passes)
+        # Filter out direct reversal of last move AND reversal of last
+        # tableau move (catches A→B, draw, B→A patterns)
+        moves = [m for m in moves
+                 if not self._is_reverse_of_any(m, last_move, last_tab_move)]
 
         for move in moves:
             new_state = state.apply_move(move)
@@ -149,7 +154,12 @@ class PerfectSolver:
                 if new_passes > self.max_stock_passes:
                     continue
 
-            result = self._dfs(new_state, depth + 1, new_passes)
+            # Track the last tableau-to-tableau move for cycle prevention
+            new_last_tab = last_tab_move
+            if move.move_type == MoveType.TABLEAU_TO_TABLEAU:
+                new_last_tab = move
+
+            result = self._dfs(new_state, depth + 1, new_passes, move, new_last_tab)
             if result is not None:
                 return [move] + forced + result
 
@@ -157,6 +167,30 @@ class PerfectSolver:
                 return None
 
         return None
+
+    @staticmethod
+    def _is_reverse_of_any(move: Move, last_move: Optional[Move],
+                           last_tab_move: Optional[Move]) -> bool:
+        """
+        Check if `move` reverses either the last move or the last
+        tableau-to-tableau move. This catches both:
+          - Direct reversals: A→B then B→A
+          - Interleaved reversals: A→B, draw, B→A
+        """
+        if move.move_type != MoveType.TABLEAU_TO_TABLEAU:
+            return False
+
+        for prev in (last_move, last_tab_move):
+            if prev is None:
+                continue
+            if prev.move_type != MoveType.TABLEAU_TO_TABLEAU:
+                continue
+            if (move.source == prev.dest and
+                    move.dest == prev.source and
+                    move.num_cards == prev.num_cards):
+                return True
+
+        return False
 
     def _apply_forced_moves(self, state: GameState) -> List[Move]:
         """
@@ -395,8 +429,21 @@ class PerfectSolver:
                             priority = 600
                         else:
                             # Non-exposing, non-emptying tableau move.
-                            # Still useful for building sequences, but lower priority.
-                            priority = 400 + num_cards
+                            # Check if it enables a foundation play on the
+                            # card below the moved sequence.
+                            enables_foundation = False
+                            if start_idx > 0:
+                                card_below = src.cards[start_idx - 1]
+                                if (not card_below.face_down and
+                                        state.foundation_accepts(card_below)):
+                                    enables_foundation = True
+
+                            if enables_foundation:
+                                priority = 650
+                            else:
+                                # Low priority — might be needed for structure
+                                # but should be tried after everything else.
+                                priority = 200 + num_cards
 
                         moves.append((priority, Move(
                             move_type=MoveType.TABLEAU_TO_TABLEAU,
