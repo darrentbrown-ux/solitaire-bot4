@@ -106,11 +106,14 @@ class PerfectSolver:
 
     def _dfs(self, state: GameState, depth: int,
              stock_passes: int, last_move: Optional[Move],
-             last_tab_move: Optional[Move] = None) -> Optional[List[Move]]:
+             recent_tab_moves: Optional[List[Move]] = None) -> Optional[List[Move]]:
         """
         Depth-first search with pruning.
         Returns the move sequence from this point to victory, or None.
         """
+        if recent_tab_moves is None:
+            recent_tab_moves = []
+
         self.nodes_explored += 1
 
         # Time check every 2000 nodes
@@ -135,12 +138,10 @@ class PerfectSolver:
             return None
         self.visited[h] = fc
 
-        # Generate and order moves, filtering reversals
+        # Generate and order moves, filtering reversals of recent tableau moves
         moves = self._generate_ordered_moves(state, stock_passes)
-        # Filter out direct reversal of last move AND reversal of last
-        # tableau move (catches A→B, draw, B→A patterns)
         moves = [m for m in moves
-                 if not self._is_reverse_of_any(m, last_move, last_tab_move)]
+                 if not self._is_reverse_of_recent(m, recent_tab_moves)]
 
         for move in moves:
             new_state = state.apply_move(move)
@@ -154,12 +155,17 @@ class PerfectSolver:
                 if new_passes > self.max_stock_passes:
                     continue
 
-            # Track the last tableau-to-tableau move for cycle prevention
-            new_last_tab = last_tab_move
+            # Update recent tableau moves list (keep last 6)
+            # Clear the list when foundation progress happens (forced moves
+            # moved cards to foundation), since that indicates real progress
+            # and previously-reversed moves may now be legitimately needed.
+            new_recent_tab = recent_tab_moves
+            if forced:  # Foundation progress happened
+                new_recent_tab = []
             if move.move_type == MoveType.TABLEAU_TO_TABLEAU:
-                new_last_tab = move
+                new_recent_tab = (new_recent_tab + [move])[-6:]
 
-            result = self._dfs(new_state, depth + 1, new_passes, move, new_last_tab)
+            result = self._dfs(new_state, depth + 1, new_passes, move, new_recent_tab)
             if result is not None:
                 return [move] + forced + result
 
@@ -169,22 +175,18 @@ class PerfectSolver:
         return None
 
     @staticmethod
-    def _is_reverse_of_any(move: Move, last_move: Optional[Move],
-                           last_tab_move: Optional[Move]) -> bool:
+    def _is_reverse_of_recent(move: Move,
+                              recent_tab_moves: List[Move]) -> bool:
         """
-        Check if `move` reverses either the last move or the last
-        tableau-to-tableau move. This catches both:
-          - Direct reversals: A→B then B→A
-          - Interleaved reversals: A→B, draw, B→A
+        Check if `move` reverses any recent tableau-to-tableau move.
+        This catches both direct and interleaved reversal patterns like:
+          A→B, C→D, B→A  (reversal of first, interleaved with second)
+          A→B, draw, B→A  (reversal across stock draw)
         """
         if move.move_type != MoveType.TABLEAU_TO_TABLEAU:
             return False
 
-        for prev in (last_move, last_tab_move):
-            if prev is None:
-                continue
-            if prev.move_type != MoveType.TABLEAU_TO_TABLEAU:
-                continue
+        for prev in recent_tab_moves:
             if (move.source == prev.dest and
                     move.dest == prev.source and
                     move.num_cards == prev.num_cards):
