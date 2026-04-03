@@ -84,7 +84,7 @@ class SolitaireBot:
 
     def start(self):
         """Main entry point."""
-        self.log("Solitaire Bot 4 — Perfect Information Solver")
+        self.log("Solitaire Bot 4 \u2014 Perfect Information Solver")
         self.log(f"Solve timeout: {self.solve_timeout}s | "
                 f"Max stock passes: {self.max_stock_passes} | "
                 f"Max attempts: {self.max_attempts or 'unlimited'}")
@@ -111,7 +111,7 @@ class SolitaireBot:
 
     def _on_escape(self):
         """Called when Escape is pressed (global hotkey)."""
-        self.log("Escape pressed — stopping bot...")
+        self.log("Escape pressed \u2014 stopping bot...")
         self.running = False
 
     def _ensure_solitaire_running(self):
@@ -163,7 +163,7 @@ class SolitaireBot:
             return False
 
     def _play_loop(self):
-        """Main game loop: solve → play → redeal → repeat."""
+        """Main game loop: solve \u2192 play \u2192 redeal \u2192 repeat."""
         while self.running:
             try:
                 # Check attempt limit
@@ -180,7 +180,7 @@ class SolitaireBot:
                     self.log("Waiting for win animation...")
                     self.controller.accept_deal_again()
                 else:
-                    # Unsolvable or failed — redeal
+                    # Unsolvable or failed \u2014 redeal
                     self.log("Dealing new game...")
                     self.controller.new_game()
 
@@ -222,56 +222,93 @@ class SolitaireBot:
 
         if not result.solved:
             self.games_unsolvable += 1
-            self.log(f"❌ Unsolvable: {result.reason} "
+            self.log(f"\u274c Unsolvable: {result.reason} "
                     f"({result.nodes_explored:,} nodes in {result.elapsed:.2f}s)")
             return "unsolvable"
 
         self.games_solved += 1
-        self.log(f"✅ Solution found: {len(result.moves)} moves "
+        self.log(f"\u2705 Solution found: {len(result.moves)} moves "
                 f"({result.nodes_explored:,} nodes in {result.elapsed:.2f}s)")
 
         # Phase 3: Execute the pre-computed move sequence
-        return self._execute_solution(state)
+        return self._execute_solution()
 
-    def _execute_solution(self, initial_state: GameState) -> str:
+    def _execute_solution(self) -> str:
         """
         Execute the pre-computed winning move sequence.
+
+        Re-reads game state from memory BEFORE each move to get accurate
+        card screen coordinates. Verifies each move succeeded by checking
+        that the game state actually changed. Retries failed moves up to
+        3 times before aborting.
+
         Returns "won" or "failed".
         """
-        state = initial_state
         move_count = 0
+        max_retries = 3
 
         while self.running:
             move = self.perfect_solver.get_next_move()
             if move is None:
-                # All moves executed — check if we actually won
+                # All moves executed \u2014 check if we actually won
                 state = self._read_state()
                 if state.is_won:
                     self.games_won += 1
-                    self.log(f"🎉 Game WON! ({move_count} moves executed)")
+                    self.log(f"\U0001f389 Game WON! ({move_count} moves executed)")
                     return "won"
                 else:
-                    self.log(f"⚠ Solution executed but game not won "
+                    self.log(f"\u26a0 Solution executed but game not won "
                             f"({move_count} moves). Possible execution error.")
                     return "failed"
+
+            # Always read fresh state from memory for accurate card coordinates
+            state = self._read_state()
+
+            # Check if already won (earlier than expected, e.g. auto-complete)
+            if state.is_won:
+                self.games_won += 1
+                self.log(f"\U0001f389 Game WON! ({move_count} moves executed)")
+                return "won"
 
             # Log the move
             remaining = self.perfect_solver.moves_remaining
             self.vlog(f"[{move_count + 1}/{move_count + 1 + remaining}] {move}")
 
-            # Execute the move
-            self.controller.execute_move(move, state)
+            # Execute the move with verification and retry logic
+            old_hash = self._hash_state(state)
+            success = False
+
+            for attempt in range(max_retries):
+                self.controller.execute_move(move, state)
+                time.sleep(self.post_move_delay)
+
+                # Re-read and verify the state actually changed
+                new_state = self._read_state()
+                new_hash = self._hash_state(new_state)
+
+                if new_hash != old_hash:
+                    success = True
+                    state = new_state
+                    break
+                else:
+                    if attempt < max_retries - 1:
+                        self.vlog(f"  \u26a0 Move had no effect, retrying... "
+                                 f"(attempt {attempt + 2}/{max_retries})")
+                        # Re-read state for fresh coordinates before retry
+                        state = self._read_state()
+                        time.sleep(0.1)
+
+            if not success:
+                self.log(f"\u26a0 Move failed after {max_retries} attempts at "
+                        f"step {move_count + 1}. Aborting solution.")
+                return "failed"
+
             move_count += 1
             self.total_moves += 1
-
-            # Wait and re-read state
-            time.sleep(self.post_move_delay)
-            state = self._read_state()
 
             # Flip any exposed face-down cards
             self._flip_exposed_cards(state)
             time.sleep(0.03 if self._fast else 0.15)
-            state = self._read_state()
 
         return "failed"
 
@@ -325,6 +362,17 @@ class SolitaireBot:
                 self.controller.flip_top_card(t)
                 time.sleep(0.03 if self._fast else 0.2)
 
+    @staticmethod
+    def _hash_state(state: GameState) -> int:
+        """Hash game state for change detection."""
+        parts = []
+        for pile in state.all_piles:
+            pile_data = tuple(
+                (c.card_id, c.face_down) for c in pile.cards
+            )
+            parts.append(pile_data)
+        return hash(tuple(parts))
+
     def _cleanup(self):
         """Clean up resources."""
         if self.reader:
@@ -356,7 +404,7 @@ class SolitaireBot:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Solitaire Bot 4 — Perfect-information Windows XP Solitaire player",
+        description="Solitaire Bot 4 \u2014 Perfect-information Windows XP Solitaire player",
     )
     parser.add_argument(
         "--exe", default=DEFAULT_EXE_PATH,
