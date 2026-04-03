@@ -264,6 +264,18 @@ class GameState:
             parts.append(pile_tuple)
         return hash(tuple(parts))
 
+    def tableau_hash(self) -> int:
+        """
+        Hash of only the tableau + foundation state (ignores stock/waste).
+        Used to detect cyclical tableau shuffling where the tableau keeps
+        returning to the same configuration while the stock advances.
+        """
+        parts: List[Tuple] = []
+        for pile in self.foundations + self.tableau:
+            pile_tuple = tuple((c.card_id, c.face_down) for c in pile.cards)
+            parts.append(pile_tuple)
+        return hash(tuple(parts))
+
     def apply_move(self, move: "Move") -> "GameState":  # type: ignore[name-defined]
         """
         Apply a move to a CLONE of this state and return the new state.

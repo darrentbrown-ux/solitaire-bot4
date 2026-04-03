@@ -431,8 +431,9 @@ class PerfectSolver:
                             priority = 600
                         else:
                             # Non-exposing, non-emptying tableau move.
-                            # Check if it enables a foundation play on the
-                            # card below the moved sequence.
+                            # Only allow if it achieves something concrete:
+
+                            # 1. Enables a foundation play on the card below
                             enables_foundation = False
                             if start_idx > 0:
                                 card_below = src.cards[start_idx - 1]
@@ -440,12 +441,28 @@ class PerfectSolver:
                                         state.foundation_accepts(card_below)):
                                     enables_foundation = True
 
+                            # 2. Creates a landing spot for the waste card
+                            #    (the source column, after removing the
+                            #    sequence, exposes a card that the waste
+                            #    card can be placed on)
+                            creates_waste_play = False
+                            if (start_idx > 0 and
+                                    state.waste.cards and
+                                    not state.waste.top_card.face_down):
+                                waste_card = state.waste.top_card
+                                card_below = src.cards[start_idx - 1]
+                                if (not card_below.face_down and
+                                        card_below.color != waste_card.color and
+                                        card_below.rank == waste_card.rank + 1):
+                                    creates_waste_play = True
+
                             if enables_foundation:
                                 priority = 650
+                            elif creates_waste_play:
+                                priority = 500
                             else:
-                                # Low priority — might be needed for structure
-                                # but should be tried after everything else.
-                                priority = 200 + num_cards
+                                # Skip: pure shuffling with no concrete benefit
+                                continue
 
                         moves.append((priority, Move(
                             move_type=MoveType.TABLEAU_TO_TABLEAU,
@@ -496,13 +513,73 @@ class PerfectSolverWrapper:
         self.last_result = result
 
         if result.solved:
-            self.move_queue = result.moves
+            # Optimize: remove cycles from the solution
+            original_len = len(result.moves)
+            optimized = self._remove_cycles(state, result.moves)
+            self.move_queue = optimized
             self.current_index = 0
+            if len(optimized) < original_len and self.solver.verbose:
+                print(f"  > Optimizer: removed {original_len - len(optimized)} "
+                      f"redundant moves ({original_len} → {len(optimized)})")
+            # Update the result's move count for logging
+            result.moves = optimized
         else:
             self.move_queue = []
             self.current_index = 0
 
         return result
+
+    @staticmethod
+    def _remove_cycles(initial_state: GameState, moves: List[Move]) -> List[Move]:
+        """
+        Remove cycles from a solution by simulating moves and detecting
+        when the game state returns to a previously-seen configuration.
+
+        If state at step i equals state at step j (j > i), all moves
+        between i and j are pointless and can be removed.
+
+        Repeats the full scan until no more cycles are found.
+        """
+        changed = True
+        while changed:
+            changed = False
+            state = initial_state.clone()
+            # Map state_hash -> index in move list (0 = before first move)
+            seen: Dict[int, int] = {}
+            seen[state.state_hash()] = 0
+
+            result: List[Move] = []
+            for i, move in enumerate(moves):
+                state = state.apply_move(move)
+                result.append(move)
+                h = state.state_hash()
+
+                if h in seen:
+                    # Found a cycle: state after result[seen[h]:] equals
+                    # current state. Remove everything from seen[h] onward
+                    # in result (those moves accomplished nothing).
+                    cycle_start = seen[h]
+                    result = result[:cycle_start]
+                    # Rebuild state to match trimmed result
+                    state = initial_state.clone()
+                    for m in result:
+                        state = state.apply_move(m)
+                    # Rebuild seen map for the trimmed prefix
+                    seen = {}
+                    s = initial_state.clone()
+                    seen[s.state_hash()] = 0
+                    for idx, m in enumerate(result):
+                        s = s.apply_move(m)
+                        seen[s.state_hash()] = idx + 1
+                    changed = True
+                    # DON'T break — continue scanning remaining moves
+                    # (they come after the cycle and may still be valid)
+                else:
+                    seen[h] = len(result)
+
+            moves = result
+
+        return moves
 
     def get_next_move(self) -> Optional[Move]:
         """Return the next move in the pre-computed sequence, or None if done."""
