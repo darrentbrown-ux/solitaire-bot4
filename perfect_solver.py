@@ -3,15 +3,19 @@ Perfect-information solver for Klondike Solitaire (Bot4).
 
 Since we can read ALL cards from memory (including face-down ones),
 this solver determines the complete winning move sequence BEFORE
-making any moves. Uses depth-limited DFS with aggressive pruning
-and move-ordering heuristics.
+making any moves. Uses DFS with aggressive pruning, move ordering,
+and a permanent transposition table.
+
+Handles both draw-1 and draw-3 modes. Draw-3 is significantly harder
+to solve due to restricted stock access — only every 3rd card is
+accessible per stock pass, requiring multiple recycles to reach all cards.
 
 If no solution is found within the time limit, the game is declared
 unsolvable and the bot redeals.
 """
 
 import time
-from typing import List, Optional, Tuple, Set
+from typing import List, Optional, Tuple, Set, Dict
 
 from game_state import (
     Card, Pile, PileType, GameState, Suit, Rank,
@@ -42,11 +46,12 @@ class PerfectSolver:
     """
     Perfect-information Klondike solver.
 
-    Uses iterative-deepening DFS with:
-    - Transposition table (visited state hashing)
+    Uses DFS with:
+    - Permanent transposition table (no backtrack removal)
     - Forced moves (auto-play safe foundation moves)
     - Move ordering (foundation > expose hidden > tableau > stock)
-    - Cycle detection via stock pass limiting
+    - Aggressive pruning for draw-3 stock access
+    - Depth limiting to prevent infinite exploration
     """
 
     def __init__(self, timeout: float = 30.0, max_stock_passes: int = 5,
@@ -58,17 +63,19 @@ class PerfectSolver:
         # Stats
         self.nodes_explored = 0
         self.start_time = 0.0
-        self.visited: Set[int] = set()
+        # Permanent transposition table: hash -> best_foundation_count
+        # We only skip a state if we've seen it with >= foundation cards
+        self.visited: Dict[int, int] = {}
+        self.max_depth = 800  # Safety limit (draw-3 solutions can be long)
 
     def solve(self, state: GameState) -> SolveResult:
         """
         Attempt to find a complete winning move sequence.
-
         Returns a SolveResult with the move list if solvable.
         """
         self.nodes_explored = 0
         self.start_time = time.time()
-        self.visited = set()
+        self.visited = {}
 
         # Apply forced moves first (Aces, safe Twos)
         state = state.clone()
@@ -79,7 +86,7 @@ class PerfectSolver:
             return SolveResult(True, pre_moves, self.nodes_explored, elapsed)
 
         # Run DFS
-        result = self._dfs(state, [], 0)
+        result = self._dfs(state, 0, 0)
 
         elapsed = time.time() - self.start_time
 
@@ -93,28 +100,39 @@ class PerfectSolver:
     def _timed_out(self) -> bool:
         return (time.time() - self.start_time) >= self.timeout
 
-    def _dfs(self, state: GameState, path: List[Move],
+    def _foundation_count(self, state: GameState) -> int:
+        """Total cards on foundations."""
+        return sum(len(f.cards) for f in state.foundations)
+
+    def _dfs(self, state: GameState, depth: int,
              stock_passes: int) -> Optional[List[Move]]:
         """
         Depth-first search with pruning.
-
         Returns the move sequence from this point to victory, or None.
         """
         self.nodes_explored += 1
 
-        # Time check every 1000 nodes
-        if self.nodes_explored % 1000 == 0 and self._timed_out():
+        # Time check every 2000 nodes
+        if self.nodes_explored % 2000 == 0 and self._timed_out():
+            return None
+
+        # Depth limit
+        if depth > self.max_depth:
             return None
 
         # Check win
         if state.is_won:
             return []
 
-        # Transposition check
+        # Transposition check with foundation-count dominance:
+        # Only skip if we've visited this state with at least as many
+        # foundation cards (meaning the previous visit was at least as good).
         h = state.state_hash()
-        if h in self.visited:
+        fc = self._foundation_count(state)
+        prev_fc = self.visited.get(h)
+        if prev_fc is not None and prev_fc >= fc:
             return None
-        self.visited.add(h)
+        self.visited[h] = fc
 
         # Generate and order moves
         moves = self._generate_ordered_moves(state, stock_passes)
@@ -131,16 +149,12 @@ class PerfectSolver:
                 if new_passes > self.max_stock_passes:
                     continue
 
-            result = self._dfs(new_state, path + [move], new_passes)
+            result = self._dfs(new_state, depth + 1, new_passes)
             if result is not None:
                 return [move] + forced + result
 
             if self._timed_out():
                 return None
-
-        # Remove from visited to allow different paths to reach this state
-        # (DFS backtracking — the state might be reachable via a better path)
-        self.visited.discard(h)
 
         return None
 
@@ -149,6 +163,7 @@ class PerfectSolver:
         Apply moves that are always correct (never need backtracking):
         - Move Aces to foundations
         - Move Twos to foundations when the Ace of same suit is already there
+        - Higher cards when both opposite-color foundations are high enough
 
         Modifies state in-place and returns the list of forced moves applied.
         """
@@ -209,7 +224,7 @@ class PerfectSolver:
         Safe to auto-move:
         - Aces (always)
         - Twos (always — the card that needs the Ace is already on foundation)
-        - Higher cards IF both opposite-color foundations have rank >= card.rank - 2
+        - Higher cards IF both opposite-color foundations have rank >= card.rank - 1
           (meaning no card of opposite color still needs to be placed ON this card)
         """
         if state.foundation_accepts(card) is None:
@@ -220,8 +235,7 @@ class PerfectSolver:
         if rank_val <= 1:  # Ace or Two
             return True
 
-        # For rank 3+, check if it's safe: both opposite-color foundations
-        # must have rank >= card.rank - 2
+        # For rank 3+, check if it's safe
         opposite_color = "red" if card.is_black else "black"
         min_opp = 99
         opp_count = 0
@@ -229,9 +243,6 @@ class PerfectSolver:
             if f.cards and f.cards[0].color == opposite_color:
                 opp_count += 1
                 min_opp = min(min_opp, f.top_card.rank.value)
-            elif not f.cards:
-                # Empty foundation of opposite color — rank is -1 effectively
-                pass
 
         if opp_count < 2:
             return False
@@ -284,6 +295,60 @@ class PerfectSolver:
                 )))
 
         # Tableau-to-tableau moves
+        tab_moves = self._tableau_to_tableau_moves(state)
+        moves.extend(tab_moves)
+
+        # Waste to tableau
+        if state.waste.cards and not state.waste.top_card.face_down:
+            card = state.waste.top_card
+            for dst in state.tableau:
+                can_place = False
+                if dst.is_empty:
+                    if card.rank == Rank.KING:
+                        can_place = True
+                elif (dst.top_card and
+                      not dst.top_card.face_down and
+                      dst.top_card.color != card.color and
+                      dst.top_card.rank == card.rank + 1):
+                    can_place = True
+
+                if can_place:
+                    # Higher priority if it helps expose cards
+                    priority = 300
+                    moves.append((priority, Move(
+                        move_type=MoveType.WASTE_TO_TABLEAU,
+                        source=PileType.WASTE,
+                        dest=dst.pile_type,
+                        card=card,
+                    )))
+
+        # Waste to foundation (already handled above)
+
+        # Draw from stock
+        if state.stock.cards:
+            moves.append((100, Move(
+                move_type=MoveType.DRAW_STOCK,
+                source=PileType.STOCK,
+                dest=PileType.WASTE,
+            )))
+
+        # Recycle waste (only if stock is empty and we haven't exceeded passes)
+        if not state.stock.cards and state.waste.cards:
+            if stock_passes < self.max_stock_passes:
+                moves.append((50, Move(
+                    move_type=MoveType.RECYCLE_WASTE,
+                    source=PileType.WASTE,
+                    dest=PileType.STOCK,
+                )))
+
+        # Sort by priority descending
+        moves.sort(key=lambda x: x[0], reverse=True)
+        return [m for _, m in moves]
+
+    def _tableau_to_tableau_moves(self, state: GameState) -> List[Tuple[int, Move]]:
+        """Generate tableau-to-tableau moves with priorities."""
+        moves: List[Tuple[int, Move]] = []
+
         for src in state.tableau:
             if src.is_empty:
                 continue
@@ -329,6 +394,8 @@ class PerfectSolver:
                         elif empties:
                             priority = 600
                         else:
+                            # Non-exposing, non-emptying tableau move.
+                            # Still useful for building sequences, but lower priority.
                             priority = 400 + num_cards
 
                         moves.append((priority, Move(
@@ -339,48 +406,7 @@ class PerfectSolver:
                             num_cards=num_cards,
                         )))
 
-        # Waste to tableau
-        if state.waste.cards and not state.waste.top_card.face_down:
-            card = state.waste.top_card
-            for dst in state.tableau:
-                can_place = False
-                if dst.is_empty:
-                    if card.rank == Rank.KING:
-                        can_place = True
-                elif (dst.top_card and
-                      not dst.top_card.face_down and
-                      dst.top_card.color != card.color and
-                      dst.top_card.rank == card.rank + 1):
-                    can_place = True
-
-                if can_place:
-                    moves.append((300, Move(
-                        move_type=MoveType.WASTE_TO_TABLEAU,
-                        source=PileType.WASTE,
-                        dest=dst.pile_type,
-                        card=card,
-                    )))
-
-        # Draw from stock
-        if state.stock.cards:
-            moves.append((100, Move(
-                move_type=MoveType.DRAW_STOCK,
-                source=PileType.STOCK,
-                dest=PileType.WASTE,
-            )))
-
-        # Recycle waste (only if stock is empty and we haven't exceeded passes)
-        if not state.stock.cards and state.waste.cards:
-            if stock_passes < self.max_stock_passes:
-                moves.append((50, Move(
-                    move_type=MoveType.RECYCLE_WASTE,
-                    source=PileType.WASTE,
-                    dest=PileType.STOCK,
-                )))
-
-        # Sort by priority descending
-        moves.sort(key=lambda x: x[0], reverse=True)
-        return [m for _, m in moves]
+        return moves
 
     def _is_valid_sequence(self, cards: List[Card]) -> bool:
         """Check if cards form a valid descending alternating-color sequence."""

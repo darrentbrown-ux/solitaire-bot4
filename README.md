@@ -77,8 +77,8 @@ Press **Escape** at any time to stop (works globally).
 |---|---|---|
 | `--fast` | Run as fast as possible (minimal delays) | Off |
 | `--speed SECS` | Delay between moves in seconds | `0.2` |
-| `--solve-timeout SECS` | Max time to spend solving each game | `30` |
-| `--max-stock-passes N` | Max stock passes the solver considers | `5` |
+| `--solve-timeout SECS` | Max time to spend solving each game | `60` |
+| `--max-stock-passes N` | Max stock passes the solver considers | `10` |
 | `--max-attempts N` | Max games to attempt (0 = unlimited) | `0` |
 | `--verbose` / `-v` | Show detailed output (hidden cards, move log) | Off |
 | `--no-launch` | Don't auto-launch sol.exe | Off |
